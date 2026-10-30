@@ -232,9 +232,13 @@ li:focus-visible{outline:3px solid var(--acc);outline-offset:-3px}
   <details>
     <summary>Sao lưu và khôi phục</summary>
     <div class="row">
-      <button class="btn ghost" id="exp"><svg class="ic "><use href="#i-up"/></svg>Sao lưu</button>
-      <button class="btn ghost" id="imp"><svg class="ic "><use href="#i-down"/></svg>Khôi phục</button>
-      <input id="impf" type="file" accept=".json,application/json" hidden>
+      <button class="btn ghost" id="expAll"><svg class="ic "><use href="#i-up"/></svg>Xuất toàn bộ nhạc</button>
+      <button class="btn ghost" id="imp"><svg class="ic "><use href="#i-down"/></svg>Nhập nhạc / khôi phục</button>
+      <button class="btn ghost" id="exp"><svg class="ic "><use href="#i-up"/></svg>Sao lưu link</button>
+      <input id="impf" type="file" accept=".nhac,.json,application/json,application/octet-stream" hidden>
+    </div>
+    <p class="hint" style="font-size:13px;opacity:.75;margin:6px 2px 0">Chuyển nhạc sang máy khác hoặc sang app đã cài: bấm “Xuất toàn bộ nhạc” để lưu một file .nhac (gồm cả file nhạc, lời, danh sách phát), rồi mở app mới và bấm “Nhập nhạc / khôi phục”, chọn file đó.</p>
+    <div class="row">
     </div>
   </details>
   <button class="btn ghost" data-close>Đóng</button>
@@ -565,10 +569,45 @@ $('#exp').onclick=()=>{
   a.download='nhac-offline-sao-luu.json';a.click();
   msg('Đã sao lưu '+items.length+' bài. Bài chỉ có trên máy không nằm trong file này.');
 };
+/* Xuất toàn bộ thư viện (kèm file nhạc + ảnh bìa) thành 1 file .nhac:
+   "NHAC1\n" + độ dài phần đầu (8 số) + phần đầu JSON + các khối dữ liệu nối tiếp nhau */
+$('#expAll').onclick=async()=>{
+  const all=(await tx('readonly',s=>s.getAll()))||[];if(!all.length)return msg('Chưa có bài nào để xuất.');
+  const parts=[],items=[];let off=0;
+  const seg=b=>{if(!(b instanceof Blob))return null;const r={o:off,n:b.size,t:b.type||''};parts.push(b);off+=b.size;return r};
+  for(const t of all){const {id,blob,cover,...rest}=t;items.push({...rest,blob:seg(blob),cover:seg(cover)})}
+  const head=new TextEncoder().encode(JSON.stringify({v:2,pls,items}));
+  const file=new Blob([new TextEncoder().encode('NHAC1\n'+String(head.length).padStart(8,'0')),head,...parts],{type:'application/octet-stream'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(file);
+  const d=new Date();a.download='nhac-offline-'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'.nhac';
+  document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);
+  msg('Đã xuất '+items.length+' bài ('+(file.size/1048576).toFixed(1)+' MB). File nằm trong mục Tải xuống.');
+};
+async function importNhac(f){
+  const magic=await f.slice(0,14).text();if(!magic.startsWith('NHAC1\n'))throw 0;
+  const hl=parseInt(magic.slice(6,14),10),base=14+hl;
+  const d=JSON.parse(await f.slice(14,base).text());
+  for(const p of d.pls||[])if(!pls.includes(p))pls.push(p);savePls();
+  const key=t=>(t.name||'')+'|'+(t.blob?t.blob.size:'')+'|'+(t.url||'');
+  const have=new Set(tracks.map(key));let n=0,dup=0;
+  const blobOf=r=>r?new Blob([f.slice(base+r.o,base+r.o+r.n)],{type:r.t}):null;
+  const bar=$('#bar'),fill=bar.firstChild;bar.style.display='block';$('#bulk').hidden=false;
+  for(let i=0;i<d.items.length;i++){const it=d.items[i];
+    fill.style.width=(i/d.items.length*100)+'%';$('#bulkT').textContent='Đang nhập '+(i+1)+' / '+d.items.length+': '+(it.name||'');
+    const rec={...it,blob:blobOf(it.blob),cover:blobOf(it.cover)};
+    if(have.has(key(rec))){dup++;continue}
+    if(rec.blob)rec.blob=new Blob([await rec.blob.arrayBuffer()],{type:rec.blob.type});  /* chép hẳn vào bộ nhớ app */
+    if(rec.cover)rec.cover=new Blob([await rec.cover.arrayBuffer()],{type:rec.cover.type});
+    await tx('readwrite',s=>s.add(rec));n++}
+  fill.style.width='100%';bar.style.display='none';$('#bulk').hidden=true;
+  fillSel();await refresh();msg('Đã nhập '+n+' bài'+(dup?', bỏ qua '+dup+' bài đã có':'')+'.');
+}
 $('#imp').onclick=()=>$('#impf').click();
 $('#impf').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  if(/\.nhac$/i.test(f.name)||(await f.slice(0,6).text())==='NHAC1\n'){try{await importNhac(f)}catch{msg('File .nhac bị hỏng hoặc không đọc được.')}e.target.value='';return}
   try{
-    const d=JSON.parse(await e.target.files[0].text());
+    const d=JSON.parse(await f.text());
     const have=new Set(tracks.map(t=>t.url).filter(Boolean));let n=0;
     for(const p of d.pls||[])if(!pls.includes(p))pls.push(p);
     savePls();
